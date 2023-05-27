@@ -108,11 +108,22 @@ class Graph:
 
     #往图中添加节点，对应switch_add
     def add_node(self,node):
+        if node in self.nodes:
+            return 
         self.nodes.append(node)
         self.num_nodes=len(self.nodes)
         self.adjacency_matrix.append([float('inf')] * (self.num_nodes - 1) + [0])
         for i in range(self.num_nodes-1):
             self.adjacency_matrix[i].append(float('inf'))
+    
+    def delete_node(self,node):
+        idx=self.nodes.index(node)
+        self.nodes.remove(node)
+        self.num_nodes=len(self.nodes)
+        del self.adjacency_matrix[idx]
+        for i in range(self.num_nodes):
+            del self.adjacency_matrix[i][idx]
+        self.run_DV()
     
     #往图中添加连接，对应link_add，同时更新整张图的路由表
     def modify_link(self,link):
@@ -162,6 +173,7 @@ class ControllerApp(app_manager.RyuApp):
         super(ControllerApp, self).__init__(*args, **kwargs)
         
         self.topo=Switches()#整个网络的拓扑结构，Switcthes中包含交换机，主机，连接，端口
+        self.portState={}   #(port_dpid,port_no)->State
         self.ofctls={}#datapath.id与openflow控制器的映射。dp.id->ofctl
         self.graph=Graph([],[])
         self.pre_router={}
@@ -169,6 +181,7 @@ class ControllerApp(app_manager.RyuApp):
         self.logger = logging.getLogger("ControllerApp")
         self.host2switch={}
         self.switch2host={}
+        self.host2port={}
         self.arp_IP_MAC_mapping_table = {} # 整个网络拓扑中所有host的IP与MAC地址映射
         '''
         arp_IP_MAC_mapping_table用法:
@@ -200,20 +213,38 @@ class ControllerApp(app_manager.RyuApp):
         self.graph.print_routing_table()
         self.pre_router[dp.id]=[]
 
+        if dp.id in self.switch2host:
+            print(self.switch2host)
+            print(dp.id)
+            actions=[]
+            sw_ofctl=self.ofctls[dp.id]
+            ofp=sw_ofctl.dp.ofproto
+            ofp_parser=sw_ofctl.dp.ofproto_parser
+            mac=self.switch2host[dp.id]
+            match=ofp_parser.OFPMatch(dl_dst=mac)
+            output_port=self.host2port[mac]
+            actions.append(ofp_parser.OFPActionOutput(int(output_port['port_no'])))
+            m = ofp_parser.OFPFlowMod(sw_ofctl.dp, match=match,actions=actions)
+            sw_ofctl.dp.send_msg(m)
+
         
 
 
     @set_ev_cls(event.EventSwitchLeave)
     def handle_switch_delete(self, ev):
         print("event.EventSwitchLeave!!!!!")
-        self.logger.info("Switch Leave %s" %ev.switch)
+        #self.logger.info("Switch Leave %s" %ev.switch)
         dp=ev.switch.dp
 
-        self.topo._unregister(dp)
+        # self.topo._unregister(dp)
 
-        cur_OfCtl=self.ofctls[dp.id]
-        del self.ofctls[dp.id]
-        cur_OfCtl.delete_flow(cookie=0,priority=0)
+        # del self.ofctls[dp.id]
+        # self.graph.delete_node(dp.id)
+        # del self.pre_router[dp.id]
+        # print("current topo:")
+        # print("switch dpid list:{}".format(self.graph.nodes))
+        # self.graph.print_routing_table()
+
 
         
     @set_ev_cls(event.EventHostAdd)
@@ -245,6 +276,7 @@ class ControllerApp(app_manager.RyuApp):
         # print("host's port is {}".format(port))
         self.host2switch[host.mac]=int(port['dpid'])
         self.switch2host[int(port['dpid'])]=host.mac
+        self.host2port[host.mac]=port
 
         actions=[]
         sw_ofctl=self.ofctls[int(port['dpid'])]
@@ -270,8 +302,11 @@ class ControllerApp(app_manager.RyuApp):
             pre_router=self.pre_router[sw]
             if pre_router==[]:
                 pre_router=[None]*len(sw_router)
-            elif len(pre_router)!=len(sw_router):
-                pre_router.extend([None]*(len(sw_router)-len(pre_router)))
+            # elif len(pre_router)<=len(sw_router):
+            #     pre_router.extend([None]*(len(sw_router)-len(pre_router)))
+            # elif len(pre_router)>len(sw_router):
+            #     pre_router=[None]*len(sw_router)
+
             self.pre_router[sw]=sw_router
             src_dpid=sw
             ports=(self.topo._get_switch(sw)).ports
@@ -281,26 +316,53 @@ class ControllerApp(app_manager.RyuApp):
                     toPort=self.port2port[port]
                     toDpid=toPort.dpid 
                     sw_port_dict[toDpid]=port
+            
+            ofp=sw_ofctl.dp.ofproto
+            ofp_parser=sw_ofctl.dp.ofproto_parser
+
+            for i in range(len(pre_router)):
+                pre_next_dpid=pre_router[i]
+                pre_dst_dpid=self.graph.nodes[i]
+                if src_dpid==pre_next_dpid or pre_next_dpid is None:
+                        continue
+                pre_hosts_mac=None
+                if pre_dst_dpid in self.switch2host:
+                    pre_hosts_mac=self.switch2host[pre_dst_dpid] 
+                else:
+                    continue    
+                pre_match=ofp_parser.OFPMatch(dl_dst=pre_hosts_mac)
+                actions=[]
+                cmd = ofp.OFPFC_DELETE
+                flow_mod = ofp_parser.OFPFlowMod(
+                sw_ofctl.dp,match=pre_match,cookie=0, command=cmd, priority=0, actions=actions)
+                sw_ofctl.dp.send_msg(flow_mod)
+            # cmd = ofp.OFPFC_DELETE
+            # actions = []
+            # flow_mod = ofp_parser.OFPFlowMod(
+            #     sw_ofctl.dp,cookie=0, command=cmd, priority=0, actions=actions)
+            # sw_ofctl.dp.send_msg(flow_mod)
             for i in range(len(sw_router)):
-                if sw_router[i]!=pre_router:
-                    next_dpid=sw_router[i]
-                    dst_dpid=self.graph.nodes[i]
-                    if src_dpid==next_dpid or next_dpid is None:
+                #if sw_router[i]!=pre_router:
+                next_dpid=sw_router[i]
+                dst_dpid=self.graph.nodes[i]
+                if src_dpid==next_dpid or next_dpid is None:
+                    continue
+                hosts_mac=None
+                if dst_dpid in self.switch2host:
+                    hosts_mac=self.switch2host[dst_dpid] 
+                else:
+                    continue
+                out_port=sw_port_dict[next_dpid].port_no#应该发往的端口
+                if (sw,out_port) in self.portState:
+                    if not self.portState[(sw,out_port)]:
                         continue
-                    hosts_mac=None
-                    if dst_dpid in self.switch2host:
-                        hosts_mac=self.switch2host[dst_dpid] 
-                    else:
-                        continue
-                    out_port=sw_port_dict[next_dpid].port_no#应该发往的端口
-                    #需指定终点交换机的地址，转发端口
-                    actions=[]
-                    ofp=sw_ofctl.dp.ofproto
-                    ofp_parser=sw_ofctl.dp.ofproto_parser
-                    match=ofp_parser.OFPMatch(dl_dst=hosts_mac)
-                    actions.append(ofp_parser.OFPActionOutput(out_port))
-                    m = ofp_parser.OFPFlowMod(sw_ofctl.dp, match=match,actions=actions)
-                    sw_ofctl.dp.send_msg(m)
+                #需指定终点交换机的地址，转发端口
+                actions=[]
+                
+                match=ofp_parser.OFPMatch(dl_dst=hosts_mac)
+                actions.append(ofp_parser.OFPActionOutput(out_port))
+                m = ofp_parser.OFPFlowMod(sw_ofctl.dp, match=match,actions=actions)
+                sw_ofctl.dp.send_msg(m)
 
 
     @set_ev_cls(event.EventLinkAdd)
@@ -339,13 +401,23 @@ class ControllerApp(app_manager.RyuApp):
     def handle_link_delete(self, ev):
         print("event.EventLinkDelete!!!!!")
         src,dst=ev.link.src,ev.link.dst
-        del self.port2port[src]
-        del self.port2port[dst]
+        if src in self.port2port:
+            del self.port2port[src]
+        if dst in self.port2port:
+            del self.port2port[dst]
 
         switch_src,switch_dst=src.dpid,dst.dpid
         self.topo.links.link_down(ev.link)
         self.graph.modify_link([switch_src,switch_dst,float('inf')])
 
+        print("switch dpid list:{}".format(self.graph.nodes))
+        print()
+        #print("=================================================================")
+
+        print("current topo:")
+        for element in self.graph.routing_tables:
+            print(element)
+        self.graph.print_routing_table()
         self.set_flow_table()
         
 
@@ -359,11 +431,14 @@ class ControllerApp(app_manager.RyuApp):
         #print(dir(ev))
         # print(dir(ev.port))
         # print(type(ev.port))
+        print(ev.port)
+        print(ev.port.is_down())
         cur_port=ev.port
-        cur_port_dp=cur_port.dpid
-        portState=self.topo.port_state[cur_port_dp]
-        portState.modify(cur_port.port_no,cur_port)
-        
+        cur_port_dpid=cur_port.dpid
+        cur_port_no=cur_port.port_no
+        self.portState[(cur_port_dpid,cur_port_no)]=ev.port.is_down()
+        #topo_port=self.topo._get_port(cur_port_dpid,cur_port_no)
+        self.set_flow_table()
 
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
