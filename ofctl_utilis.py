@@ -70,6 +70,7 @@ class OfCtl(object):
         return _register_of_version
 
     @staticmethod
+    #创建一个OpenFlow控制器,它可以与指定的交换机通信
     def factory(dp, logger):
         """
         Create an OfCtl object
@@ -95,6 +96,8 @@ class OfCtl(object):
         # OpenFlow v1_2/1_3.
         pass
 
+
+    #增加流表项,具体在各个协议中实现
     def set_flow(self, cookie, priority, dl_type=0, dl_dst=0, dl_vlan=0,
                  nw_src=0, src_mask=32, nw_dst=0, dst_mask=32,
                  nw_proto=0, idle_timeout=0, actions=None):
@@ -118,6 +121,8 @@ class OfCtl(object):
         # Abstract method
         raise NotImplementedError()
 
+
+    #删除流表项,具体在各个协议中实现
     def delete_flow(self, cookie=0, priority=0, match=None):
         """
         Delete a flow matching the following criteria
@@ -134,6 +139,12 @@ class OfCtl(object):
         # Abstract method
         raise NotImplementedError()
 
+
+    # ARP请求是指在网络中,当一台主机需要访问另一台主机时,它首先会在自己的ARP缓存中查找目标主机的IP地址对应的MAC地址。
+    # 如果缓存中没有该记录,则会发送一个ARP请求广播到网络中,请求目标主机返回其MAC地址。ARP请求中包含的信息有源主机的
+    # MAC地址、IP地址、目标主机的IP地址等信息。当目标主机收到ARP请求后,会返回一个ARP应答包,其中包含它的MAC地址,源主
+    # 机在接收到ARP应答包后,就可以向目标主机发送数据包了。
+    # 链路层
     def send_arp(self, arp_opcode, vlan_id, dst_mac,
                  sender_mac, sender_ip,
                  target_ip, target_mac,
@@ -261,11 +272,18 @@ class OfCtl(object):
         #     data_str = str(packet.Packet(data))
         # self.logger.debug('Packet out = %s', data_str, extra=self.sw_id)
 
+
+    # set_normal_flow 设置的流表是将匹配的数据包输出到 normal 端口，即交换机的默认行为，
+    # 将数据包从一个端口转发到其他所有端口，除了接收数据包的那个端口。因此，这个方法的作用
+    # 是将交换机的行为设置回默认状态。
     def set_normal_flow(self, cookie, priority):
         out_port = self.dp.ofproto.OFPP_NORMAL
         actions = [self.dp.ofproto_parser.OFPActionOutput(out_port, 0)]
         self.set_flow(cookie, priority, actions=actions)
 
+
+    # 这段代码定义了一个名为set_packetin_flow的方法,
+    # 其作用是设置一条OpenFlow流表规则,以将符合特定条件的数据包转发到控制器处理(即产生PacketIn事件)
     def set_packetin_flow(self, cookie, priority, dl_type=0, dl_dst=0,
                           dl_vlan=0, dst_ip=0, dst_mask=32, nw_proto=0):
         miss_send_len = UINT16_MAX
@@ -275,6 +293,16 @@ class OfCtl(object):
                       dl_vlan=dl_vlan, nw_dst=dst_ip, dst_mask=dst_mask,
                       nw_proto=nw_proto, actions=actions)
 
+
+
+    # 这段代码负责发送OF交换机的统计信息请求并等待响应，其中stats是一个OF交换机统计信息请求消息。
+    # waiters是一个字典，用于保存每个交换机和其对应的等待器，等待器存储了每个消息ID的事件和对应的响应消息。
+    # 在发送消息之前，代码首先通过set_xid方法设置消息的xid（transaction id），这个xid将在交换机回复消息
+    # 时用于匹配请求和响应。然后，代码创建一个事件event，用于在接收到响应消息时通知主线程。msgs列表用于
+    # 存储所有的响应消息。
+    # 接下来，代码向交换机发送统计信息请求，将事件和消息列表存储在等待器中，并返回消息列表。等待器的作用是
+    # 等待交换机的响应消息，以便在接收到响应消息后，能够将其与请求消息匹配并通知主线程。如果在一定时间内没
+    # 有收到响应，等待器将被删除。
     def send_stats_request(self, stats, waiters):
         self.dp.set_xid(stats)
         waiters_per_dp = waiters.setdefault(self.dp.id, {})
@@ -291,6 +319,19 @@ class OfCtl(object):
         return msgs
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
 @OfCtl.register_of_version(ofproto_v1_0.OFP_VERSION)
 class OfCtl_v1_0(OfCtl):
 
@@ -300,6 +341,7 @@ class OfCtl_v1_0(OfCtl):
     def get_packetin_inport(self, msg):
         return msg.in_port
 
+    #这段代码用于获取交换机上所有的流表规则
     def get_all_flow(self, waiters):
         ofp = self.dp.ofproto
         ofp_parser = self.dp.ofproto_parser
@@ -310,10 +352,11 @@ class OfCtl_v1_0(OfCtl):
                                                0xff, ofp.OFPP_NONE)
         return self.send_stats_request(stats, waiters)
 
+
     def set_flow(self, cookie, priority, dl_type=0, dl_dst=0, dl_vlan=0,
                  nw_src=0, src_mask=32, nw_dst=0, dst_mask=32,
-                 nw_proto=0, idle_timeout=0, actions=None):
-
+                 nw_proto=0, idle_timeout=0, actions=None,ofp=None):
+        print("!!!")
         ofp = self.dp.ofproto
         ofp_parser = self.dp.ofproto_parser
         cmd = ofp.OFPFC_ADD
@@ -512,6 +555,21 @@ class OfCtl_v1_3(OfCtl_after_v1_2):
         stats = ofp_parser.OFPFlowStatsRequest(self.dp, 0, 0, ofp.OFPP_ANY,
                                                ofp.OFPG_ANY, 0, 0, match)
         return self.send_stats_request(stats, waiters)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def ip_addr_aton(ip_str, err_msg=None):
