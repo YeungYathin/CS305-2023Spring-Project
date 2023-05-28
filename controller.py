@@ -18,6 +18,7 @@ import time
 from ofctl_utilis import OfCtl,OfCtl_v1_0,OfCtl_after_v1_2,VLANID_NONE
 import logging
 import copy
+import heapq
 
 #用于计算最短路，nodes与class ControllerApp中的switch.dpid对应
 class Graph:
@@ -73,6 +74,61 @@ class Graph:
             #print(self.routing_table)
             tmp=copy.deepcopy(self.routing_table)
             self.routing_tables.append(tmp)
+    
+    class Dijkstra_Node:
+        def __init__(self, node_num, neighbors, is_pushed, is_finished, parent, distance):
+            self.node_num = node_num
+            self.neighbors = neighbors
+            self.is_pushed = is_pushed
+            self.is_finished = is_finished
+            self.parent = parent
+            self.distance = distance
+        
+        def __lt__(self, other):
+            if self.distance<other.distance:
+                return True
+            else:
+                return False
+            
+    
+    def Dijkstra(self, source_node):
+        Dijkstra_Graph = {}
+        for node in self.nodes:
+            Dijkstra_Graph[node] = self.Dijkstra_Node(node_num=node, neighbors=[self.nodes[i] for i in self.get_neighbors(node)], is_pushed=False, is_finished=False, parent=None, distance=1000000000000)
+        heap = []
+        present = Dijkstra_Graph[source_node]
+        heapq.heappush(heap, present)
+        present.distance = 0
+        present.is_pushed = True
+        while len(heap)!=0:
+            present = heapq.heappop(heap)
+            present.is_finished = True
+            for i in range(len(present.neighbors)):
+                neighbor = Dijkstra_Graph[present.neighbors[i]]
+                if not neighbor.is_finished and present.distance + self.adjacency_matrix[self.nodes.index(present.node_num)][self.nodes.index(neighbor.node_num)] < neighbor.distance:
+                    neighbor.distance = present.distance + self.adjacency_matrix[self.nodes.index(present.node_num)][self.nodes.index(neighbor.node_num)]
+                    neighbor.parent = present.node_num
+                    if not neighbor.is_pushed:
+                        neighbor.is_pushed = True
+                        heapq.heappush(heap, neighbor)
+                    else:
+                        heapq.heapify(heap)
+        for key, value in Dijkstra_Graph.items():
+            if key == source_node:
+                self.routing_table[key] = (0, None)
+            elif value.parent is not None:
+                self.routing_table[key] = (value.distance, value.parent)
+            else:
+                self.routing_table[key] = (float('inf'), None)
+        
+            
+    def run_Dijkstra(self):
+        self.routing_tables = []
+        for source_node in self.nodes:
+            self.initialize_routing_table(source_node=source_node)
+            self.Dijkstra(source_node)
+            tmp=copy.deepcopy(self.routing_table)
+            self.routing_tables.append(tmp)
 
     def print_routing_table(self):
         #存储某个临时节点的路由表，其元素是key:value键值对，具体为：dp:(distance,next_hop)
@@ -123,7 +179,8 @@ class Graph:
         del self.adjacency_matrix[idx]
         for i in range(self.num_nodes):
             del self.adjacency_matrix[i][idx]
-        self.run_DV()
+        self.run_Dijkstra()
+        # self.run_DV()
     
     #往图中添加连接，对应link_add，同时更新整张图的路由表
     def modify_link(self,link):
@@ -134,7 +191,8 @@ class Graph:
         idx_dst=self.nodes.index(link[1])
         self.adjacency_matrix[idx_src][idx_dst]=link[2]
         self.adjacency_matrix[idx_dst][idx_src]=link[2]
-        self.run_DV()
+        self.run_Dijkstra()
+        # self.run_DV()
 
 
     #计算单个节点的转发表

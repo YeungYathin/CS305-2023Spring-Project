@@ -32,7 +32,7 @@ class DHCPServer():
     ip_to_time = {}
     lease_time=Config.lease_time
     bin_lease_time=struct.pack('!I',lease_time)
-    
+    offer_pool=[]
     @classmethod
     def renew_pool(cls):
         for ip in cls.ip_to_time:
@@ -59,6 +59,9 @@ class DHCPServer():
         cls.renew_pool
         if ip_addr not in cls.ip_pool:
                 return
+        if(ip_addr not in cls.offer_pool):
+            return
+        else : cls.offer_pool.remove(ip_addr)
         expire_time=datetime.datetime.now()+datetime.timedelta(seconds=cls.lease_time)
         cls.ip_to_time[ip_addr]=expire_time
         cls.ip_pool.remove(ip_addr)
@@ -140,6 +143,7 @@ class DHCPServer():
             )
         offer_pkt.add_protocol(dhcppkt)
         print("sent offer")
+        cls.offer_pool.append(ip_addr)
         return offer_pkt
 
         # TODO: Generate DHCP OFFER packet here
